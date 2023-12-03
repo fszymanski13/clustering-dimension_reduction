@@ -1,0 +1,346 @@
+---
+title: "Dimension Reduction&Clustering algorithms on the FIFA19 players data"
+author: "Filip Szymański"
+output: html_document
+---
+
+## Introduction
+
+The aim of this work is to apply unsupervised machine learning methods to analyse player statistics data in FIFA 19. The first step will be to reduce the dimensionality of the data set while keeping as much information as possible. The reduced data set will then be divided into groups using clustering algorithms. Finally, the results will be analysed and compared to the original groupings.
+
+## About the data set
+
+The data set used in this analysis can be found on [Kaggle](https://www.kaggle.com/datasets/devansodariya/football-fifa-2019-dataset). It contains all information of players who participated in the FIFA-2019 League. The data consists of all the parameters, by which a Player's ability can be measured.
+
+## Data preprocessing
+#### Libraries necessary for the analysis
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggcorrplot)
+library(ggfortify)
+library(factoextra)
+library(corrplot)
+library(measurements)
+library(rmarkdown)
+library(knitr)
+library(psych)
+library(gridExtra)
+library(NbClust)
+library(ClusterR)
+```
+
+```{r, echo = FALSE}
+setwd("C:\\Studia\\Master\\USL\\Project1")
+
+```
+```{r}
+FIFA <- read.csv("Data/FIFA-2019.csv") # loading the data as FIFA
+```
+
+
+The original dataset contains 89 variables describing the club, photo, name, etc. In this analysis we want to focus only on the player's statistics. The dataset also contains ordinal variables such as 'preferred leg' or 'tricks'. These can be problematic in this type of analysis, as we would have to convert them into numeric variables. For simplicity, they have been omitted. The variables that will be used in the analysis are listed below.
+```{r, results='hide', warning = FALSE}
+relevant.data <- c('Age', 'Overall', 'Height', 'Weight', 'Position', 'Name',
+                   'Crossing', 'Finishing', 'Heading Accuracy', 'ShortPassing', 
+                   'Volleys', 'Dribbling', 'Curve', 'FKAccuracy', 'LongPassing',
+                   'BallControl', 'Acceleration', 'SprintSpeed', 'Agility',
+                   'Reactions', 'Balance', 'ShotPower', 'Jumping', 'Stamina',
+                   'Strength', 'LongShots','Aggression', 'Interceptions', 'Positioning', 'Vision',
+                   'Penalties', 'Compousure', 'Marking', 'StandingTackle', 'SlidingTackle')
+
+fifa <- FIFA[,(names(FIFA) %in% relevant.data)]
+## converting lbs into kg 
+fifa$Weight <- as.numeric(substr(fifa$Weight,1,nchar(fifa$Weight)-3))
+fifa$Weight <- conv_unit(fifa$Weight, from = 'lbs', to = 'kg')
+## converting feet&inches into cm
+fifa <- fifa %>% separate(Height, c('feet', 'inches'), "'", convert = TRUE) %>% mutate(Height_cm = (12*feet + inches)*2.54)
+
+```
+
+For now we have to remove variables name and position. They will be used in the further stage of the analysis.
+
+```{r, results='hide'}
+## removing name, position, feet and inches
+fifa1 <- fifa[,-c(1,4,5,6)]
+## further cleaning
+fifa1$Height <- fifa1$Height_cm 
+fifa1 <- fifa1[, -31]
+## handling missing observations
+(fifa1[!complete.cases(fifa1),])
+nrow(fifa1[!complete.cases(fifa1),])
+## there are no data for all of 48 rows except for age and overall -> let's remove them
+nrow(fifa1[complete.cases(fifa1),])
+fifa1 <- fifa1[complete.cases(fifa1),]
+```
+Now our data set is ready. It contains 18159 observations and 31 dimensions.
+
+## Dimension reduction analysis
+Let's start by standardising the data, as some of the variables have different scales.
+```{r}
+fifa.z <- as.data.frame(lapply(fifa1, scale))
+```
+The next step is to check whether our data are suitable for dimensionality reduction. The correlation matrix, Kaiser–Meyer–Olkin (KMO) test and Bartlett test will help us with this.
+```{r}
+corr <- (cor(fifa.z))
+ggcorrplot(corr, outline.col = "white", ggtheme = ggplot2::theme_gray,
+           colors = c("#6D9EC1", "white", "#E46726"))
+```
+```{r}
+KMO(corr)
+cortest.bartlett(corr, n = 18159)
+```
+Looking at the correlation matrix, we see that a high number of variables are correlated with each other. This is a signal that we can reduce the dimensionality of our dataset without losing much information.
+A KMO test result of MSA = 0.96 indicates that our dataset is well suited to factorial analysis.
+In the Bartlett test, we obtained p-value = 0, indicating the heterogeneity of our sample, which is also good.
+
+We are now faced with the choice of a dimensional reduction method. Our data mainly consists of statistics on a scale of 0 to 100, and basic player characteristics such as age, height weight, etc. For such type of data with a linear relationships, Principal Component Analysis (PCA) is the most suitable.
+```{r}
+PCA1 <- prcomp(x=fifa.z, center = F, scale = F)
+summary(PCA1)
+
+eig.val <- get_eigenvalue(PCA1)
+eig.val
+```
+Looking at the PCA results we can see that by reducing the data to 5 Principal Components we will retain over 80% of the total variance.
+
+### Optimal number of dimensions
+
+```{r}
+fifa.z.cov <- cov(fifa.z)
+fifa.z.eigen <- eigen(fifa.z.cov)
+fifa.z.eigen$values
+
+## eigenvalues on y-axis
+fviz_eig(PCA1, choice='eigenvalue', addlabels = T)
+## percentage of explained variances on y-axis
+fviz_eig(PCA1, addlabels = T)
+```
+
+According to Kairser's rule, only components with eigenvalues > 1 should be selected, as such a factor contains at least as much information as a single variable. Based on this, the first 5 principal components were selected in the study.
+
+## Components analysis
+
+### Biplot
+```{r}
+fviz_pca_var(PCA1, col.var="steelblue")
+```
+
+When analysing the above plot, we should focus on the direction and length of the arrows. The length corresponds to the contribution of the variable to the principal compomnent and the direction informs about the correlation between the variables. A similar direction indicates a positive correlation, while the opposite direction indicates a negative correlation.
+In our case we can observe that higher weight and height negatively impact for example balance, agility, acceleration or speed, which is reasonable.
+```{r}
+var<-get_pca_var(PCA1)
+a<-fviz_contrib(PCA1, "var", axes=1, xtickslab.rt=90)
+b<-fviz_contrib(PCA1, "var", axes=2, xtickslab.rt=90)
+grid.arrange(a,b, top='Contribution to the first two Principal Components')
+```
+```{r}
+c<-fviz_contrib(PCA1, "var", axes=3, xtickslab.rt=90)
+d<-fviz_contrib(PCA1, "var", axes=4, xtickslab.rt=90)
+grid.arrange(c,d, top='Contribution to the Principal Components 3 and 4')
+```
+```{r}
+e<-fviz_contrib(PCA1, "var", axes=5, xtickslab.rt=90)
+grid.arrange(e, top='Contribution to the fifth Principal Component')
+```
+
+On the histograms above, we can observe a percentage contribution of each variable to each Principal Component.
+
+In this section, we were able to reduce the dimensionality of the dataset from 31 to 5, retaining 83% of the initial variance. The next section will perform a cluster analysis on the reduced dataset. 
+
+## Clustering analysis
+
+For the clustering analysis we will have to reduce the size of the data. Processing 18159 observations would take too much time. Let's reduce it to 1000. We have to set seed to keep the reproducibility of our analysis.
+
+```{r, results='hide'}
+set.seed(150)
+
+rand_df <- round(runif(1000,1,nrow(fifa1)))
+```
+
+Now we have to extract the values from the Principal Components.
+```{r}
+summ <- summary(PCA1)
+fifa_redu <- summ$x[,1:5]
+fifa_redu <- as.data.frame(fifa_redu)
+fifa_redu <- fifa_redu[rand_df,] 
+```
+
+### Clusterability & optimal number of clusters
+
+The first step will be to check the clusterability of our data. For this purpose the Hopkins statistic was used.
+```{r}
+res <- get_clust_tendency(fifa_redu, n = nrow(fifa_redu)-1, graph = FALSE)
+res$hopkins_stat
+```
+The result higher than 0.5 indicates that data set is highly clusterable.
+
+The next step will be to check the optimal number of clusters using the silhouette index. The distance was calculated using 2 common formulas: euclidean - square distance between the two vectors, and minkowski - the p norm, the p^{th} root of the sum of the p^{th} powers of the differences of the components.
+```{r}
+opt1_s <- NbClust(fifa_redu, distance="euclidean", min.nc=2, max.nc=10, method="kmeans", index="silhouette")
+opt1_s$All.index
+opt1_s$Best.nc
+```
+```{r}
+opt2_s <- NbClust(fifa_redu, distance="minkowski", min.nc=2, max.nc=10, method="kmeans", index="silhouette")
+opt2_s$All.index
+opt2_s$Best.nc
+```
+Both indicate optimal number of clusters equal to 2.
+
+Additionaly, we can check the elbow point for dissimilarity and variance explained.
+
+```{r}
+Optimal_Clusters_KMeans(fifa_redu, max_clusters=10, plot_clusters=TRUE, criterion="dissimilarity")
+Optimal_Clusters_KMeans(fifa_redu, max_clusters=10, plot_clusters=TRUE, criterion="variance_explained")
+```
+The elbow point suggests choosing 3 clusters in casem of dissimilarity and 4 in case of variance explained.
+
+In such a situation, we should consider what kind of division we can expect knowing the nature of our data. Both divisions into 2 and 4 clusters seem reasonable. In a 2-cluster split, we can expect differentiation between offensive and defensive players, while for 4 clusters, we can probably expect a division by position. Let's try both options and see which one gives more accurate results.
+
+## K-means for 2 clusters
+
+```{r, }
+kmeans_2 <- eclust(fifa_redu, "kmeans", k=2, hc_metric="euclidean", graph = FALSE)
+```
+```{r}
+fviz_cluster(kmeans_2, fifa_redu, stand = FALSE, ellipse = FALSE, geom = "point", main = "K-means with 2 clusters")
+```
+
+Let's check how the players in each position have been divided into clusters.
+```{r}
+## fifa df contains all the variables excluded earllier, which we need for the verification (namely: Name, Position)
+fifa <- fifa[complete.cases(fifa),]
+fifa2 <- fifa[rand_df,]
+## fifa1 backup
+fifa100 <- fifa1 
+fifa1 <- fifa1[rand_df,]
+```
+```{r}
+fifa1_cluster <- cbind(fifa1, Cluster = kmeans_2$cluster, Position = fifa2$Position, Name = fifa2$Name)
+```
+```{r}
+fifa_t <- as_tibble(fifa1_cluster)
+```
+
+#### Division of offensive players into clusters
+
+```{r}
+df_attack <- fifa_t %>% group_by(Cluster) %>% filter(Position == 'RF' | Position == "LF" | Position == 'CF'
+                                                     | Position == 'ST' | Position == 'LW' | Position == 'CAM'
+                                                     | Position == 'RW' | Position == 'LS' | Position == 'RS'
+                                                     | Position == 'RAM' | Position == 'LAM' | Position == 'CM'
+                                                     | Position == 'RCM' | Position == 'LCM' | Position == 'RM'
+                                                     | Position == 'LM' | Position == 'CDM'| Position == 'LDM' 
+                                                     | Position == 'RDM')
+
+attack <- factor(df_attack$Cluster)
+summary(attack)
+```
+
+#### Division of defensive players into clusters
+
+```{r}
+df_defense <- fifa_t %>% group_by(Cluster) %>% filter(Position == 'RCB' | Position == "CB" | Position == 'LCB' 
+                                                      | Position == 'GK' | Position == 'RB' | Position == "LB" 
+                                                      | Position == 'LWB' | Position == 'RWB')
+
+defense <- factor(df_defense$Cluster)
+summary(defense)
+```
+The results for offensive players look very accurate. However, the defensive players seem to be indistinguishable.
+We may have misidentified the players playing in the wingback (LWB, RWB) and side defender (LB, RB). Players in these positions are often also characterised by high offensive stats (pace, centring, dribbling, etc.)
+
+#### Division of offensive players into clusters after adjustment
+
+```{r}
+df_attack <- fifa_t %>% group_by(Cluster) %>% filter(Position == 'RF' | Position == "LF" | Position == 'CF'
+                                                     | Position == 'ST' | Position == 'LW' | Position == 'CAM'
+                                                     | Position == 'RW' | Position == 'LS' | Position == 'RS'
+                                                     | Position == 'RAM' | Position == 'LAM' | Position == 'CM'
+                                                     | Position == 'RCM' | Position == 'LCM' | Position == 'RM'
+                                                     | Position == 'LM' | Position == 'CDM'| Position == 'LDM' 
+                                                     | Position == 'RDM' | Position == 'RB' | Position == "LB" 
+                                                     | Position == 'LWB' | Position == 'RWB')
+
+attack <- factor(df_attack$Cluster)
+summary(attack)
+```
+
+#### Division of defensive players into clusters after adjustment
+
+```{r}
+df_defense <- fifa_t %>% group_by(Cluster) %>% filter(Position == 'RCB' | Position == "CB" | Position == 'LCB' 
+                                                      | Position == 'GK' )
+
+defense <- factor(df_defense$Cluster)
+summary(defense)
+```
+It looks much better now. The k-means algorithm was able to differentiate with a quite good precision between 2 types of players, defensive and offensive, based on their characteristics.
+
+## K-means for 4 clusters
+```{r}
+kmeans_4 <- eclust(fifa_redu, "kmeans", k=4, hc_metric="euclidean", graph = FALSE)
+```
+```{r}
+fviz_cluster(kmeans_4, fifa_redu, stand = FALSE, ellipse = FALSE, geom = "point", main = "K-means with 4 clusters")
+```
+```{r}
+fifa2_cluster <- cbind(fifa1, Cluster = kmeans_4$cluster, Position = fifa2$Position, Name = fifa2$Name)
+```
+```{r}
+fifa_t2 <- as_tibble(fifa2_cluster)
+```
+
+#### Division of goalkeepers into clusters
+
+```{r}
+df_GK <- fifa_t2 %>% group_by(Cluster) %>% filter(Position == 'GK')
+
+gk <- factor(df_GK$Cluster)
+summary(gk)
+```
+
+#### Division of defenders into clusters
+
+```{r}
+df_BACK <- fifa_t2 %>% group_by(Cluster) %>% filter(Position == 'LCB' | Position == "CB" | Position == 'RCB' 
+                                                   | Position == 'RWB'| Position == 'LWB' | Position == 'LB'
+                                                   | Position == 'RB')
+
+
+
+
+back <- factor(df_BACK$Cluster)
+summary(back)
+```
+
+#### Division of midfielers into clusters
+
+```{r}
+df_MID <- fifa_t2 %>% group_by(Cluster) %>% filter(Position == 'LCM' | Position == "CM" | Position == 'RCM'
+                                                  | Position == 'LDM' | Position == 'CDM' | Position == 'RDM'
+                                                  | Position == 'LAM' | Position == 'CAM' | Position == 'RAM'
+                                                  | Position == 'LM' | Position == 'RM' )
+                                                  
+
+mid <- factor(df_MID$Cluster)
+summary(mid)
+```
+
+#### Division of forwards into clusters
+
+```{r}
+df_FORWARD <- fifa_t2 %>% group_by(Cluster) %>% filter(Position == 'LF' | Position == "CF" | Position == 'RF'
+                                                   | Position == 'ST' | Position == 'LW' | Position == 'RW'
+                                                   | Position == 'LS' | Position == 'RS')
+
+forward <- factor(df_FORWARD$Cluster)
+summary(forward)
+```
+
+Out of 4 clusters, the algorithm correctly grouped all goalkeepers into cluster 2. Slightly worse, but still reasonably well, the algorithm managed to group offensive players into cluster 1. In the case of defensive positions and those playing in the center of the pitch, the algorithm encountered problems with the proper grouping of players. This is probably due to the high versatility of the players playing in the center of the field, and the wide variety of skills of the players playing in defensive positions.
+
+## Summary
+
+In this work, using Principal Components Analysis (PCA), we were able to reduce the dimensionality of the data set from 31 to 5 dimensions, retaining 83% of the original variance. The reduced sample was then subjected to the K-means clustering algorithms. Cluster analysis showed that the k-means algorithm, despite the reduced dimensionality, was able to satisfactorily divide the sample into 2 groups, offensive and defensive players. The same algorithm performed slightly worse when dividing into 4 groups. It is worth mentioning that clustering algorithms perform well on unlabelled data and prove helpful in grouping data. In this case, where we had labelled data partitioned by position, Classification Algorithm, which is a supervised machine learning algorithm, would probably have been a better choice. Nevertheless, the objective of this project was to demonstrate the ability to analyse dimensionality reduction and clustering algorithms, rather than the actual study of player classification.
